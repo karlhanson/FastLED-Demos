@@ -1,5 +1,5 @@
 /*
- * seirlight led lighting effects for FastLED.
+ * Adaptaion of Andrew Tuline's FastLED-demos for the Loomyn Hood. You can purchase the hood here: https://www.etsy.com/listing/532290149/led-light-up-hood
  * 
  *       By: Andrew Tuline
  *    Date: March, 2017
@@ -36,6 +36,15 @@
  * Most of these effects assign colours via palettes as opposed to direct CRGB or CHSV assignments. This allows you to swap out colours without having to modify the
  * underlying effects code. In addition, each of the effects contain very little code (the longest is about 12 lines) and do not employ nested loops or blocking delays.
  * 
+ * 
+ * Updates made for the Loomyn Hood:
+ * 
+ * - Changed pin settings and strand details to work with the loomyn hood
+ * - Deactivated IR 
+ * - Added two new modes: confetti_original.h and ripple.h
+ * - Modified the input button functions
+ * - Signification modification and reduction of 39 modes down to the 18 modes that work best with the loomyn hood
+ * - Added case 106: advance to the next hue/pallet within the same mode
  * 
  * 
  * 1.02 Update
@@ -114,7 +123,6 @@
  * - We can support multiple strands with a strandID.
  * - We do not save the demo flag in EEPROM. That's modified at compile time.
  * - Only the IR control supports multiple strands. Keyboard does not.
-
  * 
  * Libraries Required
  * 
@@ -124,9 +132,9 @@
  * 
  * Button Operation
  * 
- * Click          Stop demo mode and advance to the next display mode.
- * Double-click   Stop demo mode and set to mode 0.
- * Long hold      Stop demo mode and write current mode to EEPROM as startup mode.
+ * Click          Advance to the next display mode.
+ * Double-click   Cycle through various hues/pallets in the same mode.
+ * Long hold      Go to the previous mode.
  * 
  * 
  * IR Operation
@@ -176,11 +184,12 @@
  * b    Set brightness                     0-255
  * c    clear strip (set mode 0)           n/a
  * d    Set delay variable                 0-255                    10 is a good value.
- * e    Set display mode previous/next     0/1                      Previous = 0, Next = 1.
+ * e    Set display mode next/previous     0/1                      Previous = 0, Next = 1.
  * f    Set fixed palette mode (0 to max)  0-255                    It's actually modded with gGradientPaletteCount
  * g    Glitter toggle                     n/a                      Toggles on/off.
  * h    Set hue variable                   0-255                    Doesn't do much as most routines no longer use HSV, but rather use palettes. It's here if you need it.
  * i    Similar palette hue                0-255                    Set a palette with colours similar to the colour selected.
+ * j    Advance to the next hue/pallet
  * l    Set strip length & write EEPROM    1-255
  * m    Set display mode                   0-255                    It's actually modded with maxMode
  * n    Direction toggle                   n/a                      Toggles direction for SOME of the routines, like Matrix and one_sin.
@@ -211,11 +220,11 @@
 #define SEIRLIGHT_VERSION 102
 
 
-#define buttonPin 6                                           // input pin to use as a digital input
+#define buttonPin 9                                           // input pin to use as a digital input
 #include "jsbutton.h"                                         // Nice button routine by Jeff Saltzman and is already included here.
 
 #include "FastLED.h"                                          // https://github.com/FastLED/FastLED
-#include "IRLremote.h"                                        // https://github.com/NicoHood/IRLremote
+// #include "IRLremote.h"                                        // https://github.com/NicoHood/IRLremote
 #include "EEPROM.h"                                           // This is included with base install
 
 
@@ -236,12 +245,11 @@ byte inbyte;                                                  // Serial input by
 int thisarg;                                                  // Serial input argument
 
 // Fixed definitions cannot change on the fly.
-#define LED_DT 12                                             // Serial data pin for all strands
-#define LED_CK 11                                             // Serial clock pin for WS2801 or APA102
-#define COLOR_ORDER BGR                                       // It's GRB for WS2812
-#define LED_TYPE APA102                                       // Alternatively WS2801, or WS2812
-#define MAX_LEDS 100                                          // Maximum number of LED's defined (at compile time).
-
+#define LED_DT 6                                             // Serial data pin for all strands
+#//define LED_CK 11                                             // Serial clock pin for WS2801 or APA102
+#define COLOR_ORDER GRB                                       // It's GRB for WS2812
+#define LED_TYPE WS2812                                       // Alternatively WS2801, or WS2812
+#define MAX_LEDS 66                                           // Maximum number of LED's defined (at compile time).
 
 // Initialize changeable global variables.
 uint8_t NUM_LEDS;                                             // Number of LED's we're actually using, and we can change this only the fly for the strand length.
@@ -266,7 +274,7 @@ bool strandFlag = 0;                                          // Flag to let us 
 
 uint8_t ledMode;                                              // Starting mode is typically 0.
 uint8_t demorun = 0;                                          // 0 = regular mode, 1 = demo mode, 2 = shuffle mode.
-uint8_t maxMode = 38;                                         // Maximum number of modes.
+uint8_t maxMode = 17;                                         // Maximum number of modes.
 uint8_t demotime = 10;                                        // Set the length of the demo timer.
 
 
@@ -326,6 +334,7 @@ uint8_t currentPatternIndex = 0;                                // Index number 
 #include "circnoise_pal_3.h"
 #include "circnoise_pal_4.h"
 #include "confetti_pal.h"
+#include "confetti_original.h"
 #include "gradient_palettes.h"
 #include "juggle_pal.h"
 #include "matrix_pal.h"
@@ -336,6 +345,7 @@ uint8_t currentPatternIndex = 0;                                // Index number 
 #include "serendipitous_pal.h"
 #include "three_sin_pal.h"
 #include "two_sin.h"
+#include "ripple.h"
 
 
 
@@ -353,14 +363,20 @@ void setup() {
   Serial.setTimeout(SERIAL_TIMEOUT);
   
   delay(1000);
+  pinMode(buttonPin, INPUT);                                  // Set button input pin
+  digitalWrite(buttonPin, HIGH );
+
+  
   checkButton();
   delay(1000);                                                // Soft startup to ease the flow of electrons.
 
-  attachInterrupt(digitalPinToInterrupt(pinIR), IRLinterrupt<IR_NEC>, CHANGE);    // IR definition
+
+
+  //attachInterrupt(digitalPinToInterrupt(pinIR), IRLinterrupt<IR_NEC>, CHANGE);    // IR definition
   
   LEDS.setBrightness(max_bright);                                                 // Set the generic maximum brightness value.
-  LEDS.addLeds<LED_TYPE, LED_DT, LED_CK, COLOR_ORDER >(leds, MAX_LEDS);           // APA102 or WS2801 definition
-//  LEDS.addLeds<LED_TYPE, LED_DT, COLOR_ORDER >(leds, MAX_LEDS);                   // WS2812 definition
+//  LEDS.addLeds<LED_TYPE, LED_DT, LED_CK, COLOR_ORDER >(leds, MAX_LEDS);           // APA102 or WS2801 definition
+  LEDS.addLeds<LED_TYPE, LED_DT, COLOR_ORDER >(leds, MAX_LEDS);                   // WS2812 definition
   
   set_max_power_in_volts_and_milliamps(5, 1000);                                  //5V, 1000mA
 
@@ -394,7 +410,6 @@ void setup() {
 //------------------MAIN LOOP---------------------------------------------------------------
 void loop() {
   
-  getirl();                                                                 // Read a command from the IR LED and process command as required.
   readbutton();                                                             // Get button input.
   readkeyboard();                                                           // Get keyboard input.
   
@@ -435,45 +450,24 @@ void strobe_mode(uint8_t newMode, bool mc){                   // mc stands for '
 
   switch (newMode) {                                          // First time through a new mode, so let's initialize the variables for a given display.
 
-    case  0: if(mc) {fill_solid(leds,NUM_LEDS,CRGB(0,0,0));} break;                     // All off, not animated.
-    case  1: if(mc) {fill_solid(leds, NUM_LEDS,CRGB(255,255,255));} break;              // All on, not animated.
-    case  2: if(mc) {thisdelay=10; allfreq=2; thisspeed=1; thatspeed=1; thishue=0; thathue=128; thisdir=0; thisrot=1; thatrot=1; thiscutoff=128; thatcutoff=192;} two_sin(); break;
-    case  3: if(mc) {thisdelay=20; targetPalette=RainbowColors_p; allfreq=4; bgclr=0; bgbri=0; thisbright=255; startindex=64; thisinc=2; thiscutoff=224; thisphase=0; thiscutoff=224; thisrot=0; thisspeed=4; wavebright=255;} one_sin_pal(); break;
-    case  4: if(mc) {thisdelay=10; targetPalette = PartyColors_p; palchg=2;} noise8_pal(); break;
-    case  5: if(mc) {thisdelay=10; allfreq=4; thisspeed=-1; thatspeed=0; thishue=64; thathue=192; thisdir=0; thisrot=0; thatrot=0; thiscutoff=64; thatcutoff=192;} two_sin(); break;
-    case  6: if(mc) {thisdelay=20; targetPalette=RainbowColors_p; allfreq=10; bgclr=64; bgbri=4; thisbright=255; startindex=64; thisinc=2; thiscutoff=224; thisphase=0; thiscutoff=224; thisrot=0; thisspeed=4; wavebright=255;} one_sin_pal(); break;
-    case  7: if(mc) {thisdelay=10; numdots=2; targetPalette=PartyColors_p; thisfade=16; thisbeat=8; thisbright=255; thisdiff=64;} juggle_pal(); break;
-    case  8: if(mc) {thisdelay=40; targetPalette = LavaColors_p; thisindex=128; thisdir=1; thisrot=0; thisbright=255; bgclr=200; bgbri=6;} matrix_pal(); break;
-    case  9: if(mc) {thisdelay=10; allfreq=6; thisspeed=2; thatspeed=3; thishue=96; thathue=224; thisdir=1; thisrot=0; thatrot=0; thiscutoff=64; thatcutoff=64;} two_sin(); break;
-    case 10: if(mc) {thisdelay=20; targetPalette=RainbowColors_p; allfreq=16; bgclr=0; bgbri=0; thisbright=255; startindex=64; thisinc=2; thiscutoff=224; thisphase=0; thiscutoff=224; thisrot=0; thisspeed=4; wavebright=255;} one_sin_pal(); break;
-    case 11: if(mc) {thisdelay=50; mul1=5; mul2=8; mul3=7;} three_sin_pal(); break;
-    case 12: if(mc) {thisdelay=10; targetPalette=ForestColors_p;} serendipitous_pal(); break;
-    case 13: if(mc) {thisdelay=20; targetPalette=LavaColors_p; allfreq=8; bgclr=0; bgbri=4; thisbright=255; startindex=64; thisinc=2; thiscutoff=224; thisphase=0; thiscutoff=224; thisrot=0; thisspeed=4; wavebright=255;} one_sin_pal(); break;
-    case 14: if(mc) {thisdelay=10; allfreq=20; thisspeed=2; thatspeed=-1; thishue=24; thathue=180; thisdir=1; thisrot=0; thatrot=1; thiscutoff=64; thatcutoff=128;} two_sin(); break;
-    case 15: if(mc) {thisdelay=50; targetPalette = PartyColors_p; thisindex=64; thisdir=0; thisrot=1; thisbright=255; bgclr=100; bgbri=10;} matrix_pal(); break;
-    case 16: if(mc) {thisdelay=10; targetPalette = OceanColors_p; palchg=1;} noise8_pal(); break;
-    case 17: if(mc) {thisdelay=10; targetPalette=PartyColors_p;} circnoise_pal_2(); break;
-    case 18: if(mc) {thisdelay=20; allfreq=10; thisspeed=1; thatspeed=-2; thishue=48; thathue=160; thisdir=0; thisrot=1; thatrot=-1; thiscutoff=128; thatcutoff=192;} two_sin(); break;
-    case 19: if(mc) {thisdelay=50; mul1=6; mul2=9; mul3=11;} three_sin_pal(); break;
-    case 20: if(mc) {thisdelay=10; thisdir=1; thisrot=1; thisdiff=1;} rainbow_march(); break;
-    case 21: if(mc) {thisdelay=10; thisdir=1; thisrot=2; thisdiff=10;} rainbow_march(); break;
-    case 22: if(mc) {thisdelay=20; hxyinc = random16(1,15); octaves=random16(1,3); hue_octaves=random16(1,5); hue_scale=random16(10, 50);  x=random16(); xscale=random16(); hxy= random16(); hue_time=random16(); hue_speed=random16(1,3); x_speed=random16(1,30);} noise16_pal(); break;
-    case 23: if(mc) {thisdelay=20; targetPalette=OceanColors_p; allfreq=6; bgclr=0; bgbri=0; thisbright=255; startindex=64; thisinc=2; thiscutoff=224; thisphase=0; thiscutoff=224; thisrot=0; thisspeed=4; wavebright=255;} one_sin_pal(); break;
-    case 24: if(mc) {thisdelay=10; targetPalette=OceanColors_p;} circnoise_pal_4(); break;
-    case 25: if(mc) {thisdelay=20; targetPalette = PartyColors_p; thisinc=1; thishue=192; thissat=255; thisfade=2; thisdiff=32; thisbright=255;} confetti_pal(); break;
-    case 26: if(mc) {thisdelay=10; thisspeed=2; thatspeed=3; thishue=96; thathue=224; thisdir=1; thisrot=1; thatrot=2; thiscutoff=128; thatcutoff=64;} two_sin(); break;
-    case 27: if(mc) {thisdelay=30; targetPalette = ForestColors_p; thisindex=192; thisdir=0; thisrot=0; thisbright=255; bgclr=50; bgbri=0;} matrix_pal(); break;
-    case 28: if(mc) {thisdelay=20; targetPalette=RainbowColors_p; allfreq=20; bgclr=0; bgbri=0; thisbright=255; startindex=64; thisinc=2; thiscutoff=224; thisphase=0; thiscutoff=224; thisrot=0; thisspeed=4; wavebright=255;} one_sin_pal(); break;
-    case 29: if(mc) {thisdelay=20; targetPalette = LavaColors_p; thisinc=2; thishue=128; thisfade=8; thisdiff=64; thisbright=255;} confetti_pal(); break;
-    case 30: if(mc) {thisdelay=10; targetPalette=PartyColors_p;} circnoise_pal_3(); break;
-    case 31: if(mc) {thisdelay=10; numdots=4; targetPalette=OceanColors_p; thisfade=32; thisbeat=12; thisbright=255; thisdiff=20;} juggle_pal(); break;
-    case 32: if(mc) {thisdelay=30; SetupSimilar4Palette(); allfreq=4; bgclr=64; bgbri=4; thisbright=255; startindex=64; thisinc=2; thiscutoff=224; thisphase=0; thiscutoff=128; thisrot=1; thisspeed=8; wavebright=255;} one_sin_pal(); break;
-    case 33: if(mc) {thisdelay=50; mul1=3; mul2=4; mul3=5;} three_sin_pal(); break;
-    case 34: if(mc) {thisdelay=10; thisdir=-1; thisrot=1; thisdiff=5;} rainbow_march(); break;
-    case 35: if(mc) {thisdelay=10; targetPalette=PartyColors_p;} circnoise_pal_1(); break;
-    case 36: if(mc) {thisdelay=20; targetPalette = ForestColors_p; thisinc=1; thishue=random8(255); thisfade=1; thisbright=255;} confetti_pal(); break;
-    case 37: if(mc) {thisdelay=20; octaves=1; hue_octaves=2; hxy=6000; x=5000; xscale=3000; hue_scale=50; hue_speed=15; x_speed=100;} noise16_pal(); break;
-    case 38: if(mc) {thisdelay=10; targetPalette = LavaColors_p; palchg=0;} noise8_pal(); break;
+    case  0: if(mc) {thishue = 10;} fill_solid(leds, NUM_LEDS,CHSV(thishue, 200, 150)); break;              // All on, not animated. 
+    case  1: if(mc) {thisdelay=35; thishue=0;} confetti_original(); break;
+    case  2: if(mc) {thisdelay=25; targetPalette=OceanColors_p; allfreq=10; bgclr=64; bgbri=4; thisbright=255; startindex=64; thisinc=2; thiscutoff=224; thisphase=0; thiscutoff=224; thisrot=0; thisspeed=4; wavebright=255;} one_sin_pal(); break;
+    case  3: if(mc) {thisdelay=15; targetPalette=LavaColors_p; allfreq=8; bgclr=0; bgbri=4; thisbright=255; startindex=64; thisinc=2; thiscutoff=224; thisphase=0; thiscutoff=224; thisrot=0; thisspeed=4; wavebright=255;} one_sin_pal(); break;
+    case  4: if(mc) {thisdelay=30; SetupSimilar4Palette(); allfreq=4; bgclr=64; bgbri=4; thisbright=255; startindex=64; thisinc=2; thiscutoff=224; thisphase=0; thiscutoff=128; thisrot=1; thisspeed=8; wavebright=255;} one_sin_pal(); break;
+    case  5: if(mc) {thisdelay=20; targetPalette=RainbowColors_p; allfreq=20; bgclr=0; bgbri=0; thisbright=255; startindex=64; thisinc=2; thiscutoff=224; thisphase=0; thiscutoff=224; thisrot=0; thisspeed=4; wavebright=255;} one_sin_pal(); break;
+    case  6: if(mc) {thisdelay=10; allfreq=6; thisspeed=2; thatspeed=3; thishue=196; thathue=68; thisdir=1; thisrot=0; thatrot=0; thiscutoff=64; thatcutoff=64;} two_sin(); break;
+    case  7: if(mc) {thisdelay=10; allfreq=20; thisspeed=2; thatspeed=-1; thishue=124; thathue=21; thisdir=1; thisrot=0; thatrot=1; thiscutoff=64; thatcutoff=128;} two_sin(); break;
+    case  8: if(mc) {thisdelay=20; allfreq=10; thisspeed=1; thatspeed=-2; thishue=48; thathue=160; thisdir=0; thisrot=1; thatrot=-1; thiscutoff=128; thatcutoff=192;} two_sin(); break;
+    case  9: if(mc) {thisdelay=50; mul1=5; mul2=8; mul3=7;} three_sin_pal(); break;
+    case 10: if(mc) {thisdelay=10; numdots=3; targetPalette=CloudColors_p; thisfade=25; thisbeat=9; thisbright=255; thisdiff=64;} juggle_pal(); break;
+    case 11: if(mc) {thisdelay=10; targetPalette=ForestColors_p;} circnoise_pal_2(); break;
+    case 12: if(mc) {thisdelay=10; targetPalette=PartyColors_p;} circnoise_pal_3(); break;
+    case 13: if(mc) {thisdelay=10; thisdir=1; thisrot=1; thisdiff=1;} rainbow_march(); break;
+    case 14: if(mc) {thisdelay=10; thisdir=1; thisrot=2; thisdiff=10;} rainbow_march(); break;
+    case 15: if(mc) {thisdelay=10; targetPalette = PartyColors_p; palchg=2; thisbright=200;} noise8_pal(); break;
+    case 16: if(mc) {thisdelay=20; octaves=1; hue_octaves=2; hxy=6000; x=5000; xscale=3000; hue_scale=50; hue_speed=15; x_speed=100;} noise16_pal(); break;
+    case 17: if(mc) {thisdelay=75; thisbright=255; targetPalette = OceanColors_p; thisfade = 50; palchg=0;} ripple(); break;
 
   } // switch newMode
   
@@ -635,9 +629,9 @@ void readkeyboard() {                                         // Process serial 
 
         thisarg = Serial.parseInt();
         if (thisarg) {
-          demorun = 0; ledMode=(ledMode+1)%(maxMode+1);
+          demorun = 0; ledMode=(ledMode-1); if (ledMode==255) ledMode=maxMode; 
         } else {
-         demorun = 0; ledMode=(ledMode-1); if (ledMode==255) ledMode=maxMode; 
+          demorun = 0; ledMode=(ledMode+1)%(maxMode+1);
         }
         strobe_mode(ledMode,1);
         break;
@@ -670,6 +664,22 @@ void readkeyboard() {                                         // Process serial 
         SetupMySimilar4Palette();
         break;
 
+      case 106:                                               // "j" - Advance to the next hue/pallet
+        demorun = 0;
+        palchg = 0;
+        thisarg = Serial.parseInt();
+        thishue+= 25;
+        thathue+= 25;
+        gCurrentPaletteNumber = (gCurrentPaletteNumber + 1) % gGradientPaletteCount;
+        targetPalette = gGradientPalettes[gCurrentPaletteNumber];
+        Serial.print("Advance Palette: ");
+        Serial.println(gCurrentPaletteNumber);
+        Serial.print("This Hue: ");
+        Serial.println(thishue);
+        Serial.print("That Hue: ");
+        Serial.println(thathue);
+        break;
+    
       case 108:                                               // "l" - Set strip length & save
         thisarg = Serial.parseInt();
         NUM_LEDS = constrain(thisarg,1,MAX_LEDS);
@@ -739,21 +749,30 @@ void readbutton() {                                           // Read the button
     demorun = 0;
     ledMode=(ledMode+1)%(maxMode+1);
     strobe_mode(ledMode,1);
-    Serial.print("Advance ");
+    Serial.print("Next Mode: ");
     Serial.println(ledMode);
   }
-
-  if (b == 2) {                                               // A double-click event to reset to 0
+  
+  if (b == 2) {                                               // A double-click event to advance fixed palette
     demorun = 0;
-    ledMode = 0;
-    strobe_mode(ledMode, 1);
-    Serial.println("Reset");
+    palchg = 0;
+    thisarg = Serial.parseInt();
+    thishue+= 25;
+    thathue+= 25;
+    gCurrentPaletteNumber = (gCurrentPaletteNumber + 1) % gGradientPaletteCount;
+    targetPalette = gGradientPalettes[gCurrentPaletteNumber];
+    Serial.print("Advance Palette: ");
+    Serial.println(gCurrentPaletteNumber);
+    Serial.print("Advance Hue: ");
+    Serial.println(thishue);
   }
 
-  if (b == 3) {                                               // A hold event to write current mode to EEPROM
-    demorun = 0;
-    EEPROM.write(STARTMODE,ledMode);
-    Serial.print("Writing Button: ");
+  if (b == 3) {                                               // A hold event to go to the previous mode
+    demorun = 0; 
+    ledMode=(ledMode-1); 
+    if (ledMode==255) ledMode=maxMode; 
+    strobe_mode(ledMode,1);
+    Serial.print("Past Mode: ");
     Serial.println(ledMode);
   }
 
